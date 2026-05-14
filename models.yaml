@@ -276,6 +276,24 @@ models:
     loaded_gb: 9
     vllm_extra_flags: "--max-model-len 1024 --max-num-seqs 32 --max-num-batched-tokens 32768 --compilation_config '{\"cudagraph_mode\": \"PIECEWISE\"}'"
 
+  # Same model as voxtral-mini-4b but on a locally-built image that hot-patches
+  # vllm-project/vllm PR #39229 into voxtral_realtime.py. The stock cu130-nightly
+  # crashes on concurrent batch POSTs to /v1/audio/transcriptions (tensor size
+  # mismatch in gpu_model_runner._preprocess); the patch fixes the
+  # mixed-batch embedding tensor allocation. Build the image first:
+  #     make build-voxtral-fix
+  - name: mistralai/Voxtral-Mini-4B-Realtime-2602
+    label: voxtral-mini-4b-patched
+    role: small
+    modality: stt
+    quantization: none
+    gpu_memory_util: 0.95
+    tensor_parallel: 1
+    topology: dense
+    loaded_gb: 9
+    vllm_image: vllm/vllm-openai:voxtral-fix
+    vllm_extra_flags: "--max-model-len 1024 --max-num-seqs 32 --max-num-batched-tokens 32768 --compilation_config '{\"cudagraph_mode\": \"PIECEWISE\"}'"
+
   - name: mistralai/Voxtral-Mini-3B-2507
     label: voxtral-mini-3b
     role: small
