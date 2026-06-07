@@ -167,6 +167,32 @@ models:
     loaded_gb: 28
     vllm_extra_flags: "--language-model-only --reasoning-parser qwen3 --enable-auto-tool-choice --tool-call-parser qwen3_coder"
 
+  - name: Qwen/Qwen3.6-27B
+    label: qwen36-27b-text
+    role: large
+    modality: text
+    quantization: none          # BF16 official checkpoint; start here for correctness, then compare against runtime FP8 if needed
+    gpu_memory_util: 0.90
+    tensor_parallel: 1
+    topology: dense             # 28B dense (qwen3_5), Gated DeltaNet + Gated Attention hybrid
+    loaded_gb: 60               # ~56 GB BF16 weights plus overhead; calibrate after solo load with nvidia-smi
+    max_model_len: 262144       # Native Qwen3.6 context; lower to 131072 first if startup OOMs
+    vllm_image: vllm/vllm-openai:cu130-nightly
+    vllm_extra_flags: "--language-model-only --reasoning-parser qwen3 --enable-auto-tool-choice --tool-call-parser qwen3_coder"
+
+  - name: Qwen/Qwen3.6-27B
+    label: qwen36-27b-fp8-text
+    role: large
+    modality: text
+    quantization: fp8           # Runtime FP8 fallback for throughput/memory comparison against the BF16 baseline
+    gpu_memory_util: 0.90
+    tensor_parallel: 1
+    topology: dense
+    loaded_gb: 32               # Expected runtime-FP8 footprint; calibrate after solo load with nvidia-smi
+    max_model_len: 262144
+    vllm_image: vllm/vllm-openai:cu130-nightly
+    vllm_extra_flags: "--language-model-only --reasoning-parser qwen3 --enable-auto-tool-choice --tool-call-parser qwen3_coder"
+
   - name: Qwen/Qwen3.5-27B
     label: qwen35-27b-text
     role: large
