@@ -114,6 +114,10 @@ make stt-streaming-bench LABEL=voxtral-mini-4b
 
 # Goal 4: Mixed text + STT co-deploy
 make mixed-co-deploy LABEL_LARGE=gpt-oss-120b LABEL_STT=voxtral-mini-4b
+
+# L40 server 03: Voxtral priority + low-rate Chandra OCR
+GPU_VRAM_GB=48 CO_SERVE_GPU_UTIL_A=0.55 CO_SERVE_GPU_UTIL_B=0.30 \
+  make co-serve LABEL_A=voxtral-mini-4b LABEL_B=chandra-ocr-2
 ```
 
 ---
@@ -189,11 +193,13 @@ Models that support both text and vision (e.g., Qwen3.5, Ministral-3) appear **t
 
 ### Co-deploy Memory Allocation
 
-`gpu_memory_util` is only used for solo benchmarks (Goals 1). For co-deploy (Goal 2), `sweep.py` auto-computes proportional memory splits from `loaded_gb`:
+`gpu_memory_util` is only used for solo benchmarks (Goal 1). For co-deploy (Goal 2), `sweep.py` auto-computes memory splits from `loaded_gb`:
 
-- **Budget:** 92% of 96 GB = 88 GB (8% reserved for CUDA context)
-- **Headroom:** 15% over `loaded_gb` for KV cache and activations
-- Pairs where `(large.loaded_gb + small.loaded_gb) × 1.15 > 88 GB` are skipped
+- **GPU size:** 96 GB by default; override with `GPU_VRAM_GB=48` on an L40.
+- **Budget:** 90% of GPU VRAM is allocated to vLLM servers; 10% stays reserved for CUDA context, driver, and transient scratch.
+- **Headroom:** 20% over `loaded_gb` for text/VLM KV cache and activations; 50% over `loaded_gb` for STT audio encoder and spectrogram activations.
+- **Manual co-serve split:** set `CO_SERVE_GPU_UTIL_A` and `CO_SERVE_GPU_UTIL_B` when the port-8000 model should receive priority headroom even if it is not the larger model.
+- Pairs whose headroom-adjusted estimates exceed the budget are skipped.
 
 ---
 
@@ -280,6 +286,34 @@ make mixed-co-deploy LABEL_LARGE=gpt-oss-120b LABEL_STT=voxtral-mini-4b
 
 Co-deploys a text LLM + STT model on the same GPU and benchmarks both simultaneously. Text requests exercise the chat/completion endpoint while STT requests transcribe audio files — mimicking real-world usage (e.g., meeting transcription + LLM queries at the same time). Reports independent metrics for each endpoint.
 
+### 5. Server 03 — Voxtral + Chandra OCR on L40
+
+> "Can we keep Voxtral as the priority workload while offering low-rate OCR?"
+
+After the repo changes are merged, SSH to server 03 and pull them:
+
+```bash
+git pull
+make stop
+```
+
+Optional first calibration pass for Chandra OCR:
+
+```bash
+make serve LABEL=chandra-ocr-2
+make status
+make stop
+```
+
+Start the mixed offering with Voxtral on port 8000 and Chandra OCR on port 8001:
+
+```bash
+GPU_VRAM_GB=48 CO_SERVE_GPU_UTIL_A=0.55 CO_SERVE_GPU_UTIL_B=0.30 \
+  make co-serve LABEL_A=voxtral-mini-4b LABEL_B=chandra-ocr-2
+```
+
+This explicitly gives Voxtral about 26.4 GB on the L40 and Chandra about 14.4 GB, leaving roughly 7.2 GB outside vLLM allocation for CUDA/runtime slack. Keep OCR concurrency low; if Chandra OOMs during real documents, try `CO_SERVE_GPU_UTIL_A=0.50 CO_SERVE_GPU_UTIL_B=0.35`. If Voxtral latency or streaming stability regresses, reduce Chandra OCR request concurrency first.
+
 ---
 
 ## Reference — All Make Targets
@@ -289,6 +323,7 @@ Co-deploys a text LLM + STT model on the same GPU and benchmarks both simultaneo
 | `make sanity [LABEL=]` | Quick 10-request validation |
 | `make concurrency-bench [LABEL=]` | Goal 1 — rank single-tenant models |
 | `make co-deploy [LABEL_LARGE= LABEL_SMALL=]` | Goal 2 — rank co-deploy pairs |
+| `make co-serve LABEL_A=<label> LABEL_B=<label>` | Boot two models on ports 8000/8001 without benchmarking |
 | `make download-stt-data` | Download LibriSpeech test-clean dataset |
 | `make stt-sanity [LABEL=]` | Goal 3 — quick 10-file STT smoke test |
 | `make stt-bench [LABEL=]` | Goal 3 — STT concurrency benchmark |

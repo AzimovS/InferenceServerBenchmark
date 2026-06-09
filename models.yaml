@@ -289,6 +289,19 @@ models:
     topology: dense
     loaded_gb: 9
 
+  # ── OCR / VLM ─────────────────────────────────────────────────────────────
+
+  - name: datalab-to/chandra-ocr-2
+    label: chandra-ocr-2
+    role: small
+    modality: vlm               # OCR/image-to-text model; low-rate colocated offering with Voxtral on L40
+    quantization: none          # BF16, 5B params
+    gpu_memory_util: 0.35       # Solo smoke-test budget on 48 GB; co-serve should use explicit L40 split
+    tensor_parallel: 1
+    topology: dense
+    loaded_gb: 12               # Initial estimate; calibrate after first solo load with nvidia-smi
+    vllm_extra_flags: "--limit-mm-per-prompt '{\"image\": 1, \"audio\": 0}' --max-model-len 8192 --max-num-seqs 2 --max-num-batched-tokens 16384"
+
   # ── STT (Speech-to-Text) ─────────────────────────────────────────────────
 
   - name: mistralai/Voxtral-Mini-4B-Realtime-2602

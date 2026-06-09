@@ -68,6 +68,28 @@ def _model_flag(key: str, value, prefix: str = "") -> str:
     return f"--{key} {value}"
 
 
+def _env_float(name: str, default: float) -> float:
+    value = os.environ.get(name)
+    if value is None or value == "":
+        return default
+    try:
+        parsed = float(value)
+    except ValueError:
+        print(f"ERROR: {name} must be a float, got {value!r}", file=sys.stderr)
+        sys.exit(1)
+    if parsed <= 0:
+        print(f"ERROR: {name} must be > 0, got {parsed}", file=sys.stderr)
+        sys.exit(1)
+    return parsed
+
+
+def _optional_env_float(name: str) -> float | None:
+    value = os.environ.get(name)
+    if value is None or value == "":
+        return None
+    return _env_float(name, 0.0)
+
+
 def write_env(model: dict, enable_prefix_caching: bool = True, hf_token: str | None = None):
     quant = model.get("quantization", "none")
     quant_flag = f"--quantization {quant}" if quant != "none" else ""
@@ -514,7 +536,7 @@ def context_window_check(model: dict, bench_key: str) -> bool:
 # Co-deploy memory allocation
 # ---------------------------------------------------------------------------
 
-GPU_VRAM_GB = 96.0
+GPU_VRAM_GB = _env_float("GPU_VRAM_GB", 96.0)
 CO_DEPLOY_TOTAL_BUDGET = 0.90   # leave 10% for CUDA context / driver / Triton scratch
 CO_DEPLOY_HEADROOM = 1.20       # 20% headroom over loaded_gb for KV cache / activations
 CO_DEPLOY_STT_HEADROOM = 1.50   # 50% headroom for STT: audio encoder cache + spectrogram activations
@@ -600,6 +622,24 @@ def co_serve(
             file=sys.stderr,
         )
         sys.exit(1)
+
+    override_a = _optional_env_float("CO_SERVE_GPU_UTIL_A")
+    override_b = _optional_env_float("CO_SERVE_GPU_UTIL_B")
+    if override_a is not None or override_b is not None:
+        a_util = override_a if override_a is not None else a_util
+        b_util = override_b if override_b is not None else b_util
+        if a_util + b_util > CO_DEPLOY_TOTAL_BUDGET:
+            print(
+                f"ERROR: CO_SERVE_GPU_UTIL_A + CO_SERVE_GPU_UTIL_B = {a_util + b_util:.2f}; "
+                f"must be <= {CO_DEPLOY_TOTAL_BUDGET:.2f}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        print(
+            f">>> Using explicit co-serve GPU util override: "
+            f"{label_a}={a_util:.2f}, {label_b}={b_util:.2f}",
+            flush=True,
+        )
 
     section(
         f"CO-SERVE: {label_a} ({a_util:.0%}) on :8000  +  {label_b} ({b_util:.0%}) on :8001"
