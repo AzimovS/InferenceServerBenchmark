@@ -157,6 +157,11 @@ stop:
 build-gemma4:
 	docker build --no-cache -f Dockerfile.vllm-gemma4 -t vllm/vllm-openai:gemma4-v2 .
 
+# Build the Voxtral-fixed vLLM image with vllm-project/vllm PR #39229 hot-patched.
+# This unblocks concurrent /v1/audio/transcriptions requests for Voxtral-Mini-4B.
+build-voxtral-fix:
+	docker build -f Dockerfile.vllm-voxtral-fixed -t vllm/vllm-openai:voxtral-fix .
+
 results:
 	@echo "=== Result Files (most recent first) ==="
 	@ls -lht results/ | head -40

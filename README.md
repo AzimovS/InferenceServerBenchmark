@@ -105,19 +105,21 @@ make co-deploy
 
 # Goal 3: STT benchmarking (download dataset first)
 make download-stt-data
-make stt-sanity LABEL=voxtral-mini-4b
-make stt-bench LABEL=voxtral-mini-4b
+make build-voxtral-fix
+make stt-sanity LABEL=voxtral-mini-4b-patched
+make stt-bench LABEL=voxtral-mini-4b-patched
 
 # Goal 3b: Streaming STT benchmarking (WebSocket /v1/realtime)
-make stt-streaming-sanity LABEL=voxtral-mini-4b
-make stt-streaming-bench LABEL=voxtral-mini-4b
+make stt-streaming-sanity LABEL=voxtral-mini-4b-patched
+make stt-streaming-bench LABEL=voxtral-mini-4b-patched
 
 # Goal 4: Mixed text + STT co-deploy
-make mixed-co-deploy LABEL_LARGE=gpt-oss-120b LABEL_STT=voxtral-mini-4b
+make mixed-co-deploy LABEL_LARGE=gpt-oss-120b LABEL_STT=voxtral-mini-4b-patched
 
 # L40 server 03: Voxtral priority + low-rate Chandra OCR
+make build-voxtral-fix
 GPU_VRAM_GB=48 CO_SERVE_GPU_UTIL_A=0.55 CO_SERVE_GPU_UTIL_B=0.30 \
-  make co-serve LABEL_A=voxtral-mini-4b LABEL_B=chandra-ocr-2
+  make co-serve LABEL_A=voxtral-mini-4b-patched LABEL_B=chandra-ocr-2
 ```
 
 ---
@@ -246,13 +248,14 @@ Two vLLM instances on one GPU. 70% traffic to large, 30% to small. Same 2-D swee
 make download-stt-data
 
 # Quick smoke test (10 audio files)
-make stt-sanity LABEL=voxtral-mini-4b
+make build-voxtral-fix
+make stt-sanity LABEL=voxtral-mini-4b-patched
 
 # Full concurrency benchmark (sweep over concurrent streams)
-make stt-bench LABEL=voxtral-mini-4b
+make stt-bench LABEL=voxtral-mini-4b-patched
 ```
 
-Transcribes audio files from LibriSpeech test-clean via `/v1/audio/transcriptions`, computes **WER** (Word Error Rate) against reference transcripts, and measures **RTF** (Real-Time Factor). Concurrency sweep tests throughput under parallel streams.
+Transcribes audio files from LibriSpeech test-clean via `/v1/audio/transcriptions`, computes **WER** (Word Error Rate) against reference transcripts, and measures **RTF** (Real-Time Factor). Use `voxtral-mini-4b-patched` for concurrent batch workloads; it uses a vLLM image hot-patched with vLLM PR #39229 to avoid the Voxtral V1 mixed-batch crash.
 
 ### 3b. Goal 3b — Streaming STT Benchmark (WebSocket)
 
@@ -260,10 +263,10 @@ Transcribes audio files from LibriSpeech test-clean via `/v1/audio/transcription
 
 ```bash
 # Quick smoke test (10 files, sequential)
-make stt-streaming-sanity LABEL=voxtral-mini-4b
+make stt-streaming-sanity LABEL=voxtral-mini-4b-patched
 
-# Concurrency benchmark (1, 2, 4 simultaneous WebSocket sessions)
-make stt-streaming-bench LABEL=voxtral-mini-4b
+# Concurrency benchmark (sweep over simultaneous WebSocket sessions)
+make stt-streaming-bench LABEL=voxtral-mini-4b-patched
 ```
 
 Streams PCM16 audio at real-time speed over the `/v1/realtime` WebSocket API, simulating live microphone input. Measures streaming-specific metrics:
@@ -281,7 +284,8 @@ Configurable `realtime_factor` (1.0 = real-time mic speed, 0.0 = blast as fast a
 > "Can we run text and STT simultaneously on one GPU?"
 
 ```bash
-make mixed-co-deploy LABEL_LARGE=gpt-oss-120b LABEL_STT=voxtral-mini-4b
+make build-voxtral-fix
+make mixed-co-deploy LABEL_LARGE=gpt-oss-120b LABEL_STT=voxtral-mini-4b-patched
 ```
 
 Co-deploys a text LLM + STT model on the same GPU and benchmarks both simultaneously. Text requests exercise the chat/completion endpoint while STT requests transcribe audio files — mimicking real-world usage (e.g., meeting transcription + LLM queries at the same time). Reports independent metrics for each endpoint.
@@ -308,11 +312,12 @@ make stop
 Start the mixed offering with Voxtral on port 8000 and Chandra OCR on port 8001:
 
 ```bash
+make build-voxtral-fix
 GPU_VRAM_GB=48 CO_SERVE_GPU_UTIL_A=0.55 CO_SERVE_GPU_UTIL_B=0.30 \
-  make co-serve LABEL_A=voxtral-mini-4b LABEL_B=chandra-ocr-2
+  make co-serve LABEL_A=voxtral-mini-4b-patched LABEL_B=chandra-ocr-2
 ```
 
-This explicitly gives Voxtral about 26.4 GB on the L40 and Chandra about 14.4 GB, leaving roughly 7.2 GB outside vLLM allocation for CUDA/runtime slack. Keep OCR concurrency low; if Chandra OOMs during real documents, try `CO_SERVE_GPU_UTIL_A=0.50 CO_SERVE_GPU_UTIL_B=0.35`. If Voxtral latency or streaming stability regresses, reduce Chandra OCR request concurrency first.
+This explicitly gives the patched Voxtral server about 26.4 GB on the L40 and Chandra about 14.4 GB, leaving roughly 7.2 GB outside vLLM allocation for CUDA/runtime slack. Keep OCR concurrency low; if Chandra OOMs during real documents, try `CO_SERVE_GPU_UTIL_A=0.50 CO_SERVE_GPU_UTIL_B=0.35`. If Voxtral latency or streaming stability regresses, reduce Chandra OCR request concurrency first.
 
 ---
 
@@ -333,6 +338,7 @@ This explicitly gives Voxtral about 26.4 GB on the L40 and Chandra about 14.4 GB
 | `make probe [LABEL=]` | Auto-detect max_model_len for models |
 | `make serve LABEL=<label>` | Start vLLM for one model (no bench) |
 | `make prefetch` | Pre-download all models to HF cache |
+| `make build-voxtral-fix` | Build the Voxtral vLLM image hot-patched with vLLM PR #39229 |
 | `make tui` | Interactive results explorer (terminal UI) |
 | `make bench-sanity` | Run sanity against whatever is up |
 | `make bench-concurrency` | Run concurrency bench against whatever is up |
@@ -369,7 +375,7 @@ This explicitly gives Voxtral about 26.4 GB on the L40 and Chandra about 14.4 GB
 │   ├── concurrency_bench.yaml   ← Goal 1: 2-D prompt×output sweep, 10 concurrent, 200 req
 │   ├── split_load.yaml          ← Goal 2: same 2-D sweep, 70/30 traffic split
 │   ├── stt_sanity.yaml          ← Goal 3: 10-file STT smoke test
-│   ├── stt_concurrency_bench.yaml ← Goal 3: STT concurrency sweep [1,2,4,8]
+│   ├── stt_concurrency_bench.yaml ← Goal 3: STT concurrency sweep [1,8,16,32,48,64,96,128]
 │   ├── stt_streaming_sanity.yaml ← Goal 3b: streaming STT smoke test (WebSocket)
 │   ├── stt_streaming_bench.yaml ← Goal 3b: streaming STT concurrency sweep [1,2,4]
 │   └── mixed_co_deploy.yaml     ← Goal 4: text + STT simultaneous benchmark

@@ -1,0 +1,42 @@
+# =============================================================================
+# Dockerfile.vllm-voxtral-fixed — vLLM image with PR #39229 hot-patched in
+# =============================================================================
+#
+# RETIRE THIS FILE once vLLM ships PR #39229 in a release that propagates to
+# the cu130-nightly tag. Track: https://github.com/vllm-project/vllm/pull/39229
+# After it merges and the fix is in a recent cu130-nightly:
+#   1. Run a sanity bench on stock cu130-nightly with concurrency >= 3 to
+#      confirm the crash is gone.
+#   2. Drop the `vllm_image: vllm/vllm-openai:voxtral-fix` line from the
+#      voxtral-mini-4b-patched entry in models.yaml.
+#   3. Delete this Dockerfile and the `build-voxtral-fix` target in Makefile.
+#   4. Remove the "voxtral-fix" substring check in core/sweep.py.
+#
+# Voxtral-Mini-4B-Realtime-2602 crashes on the vLLM V1 engine when the scheduler
+# mixes a prefilling audio request with one or more decoding requests in the same
+# step. The realtime model's `embed_input_ids` returns a flat MM-only embeddings
+# tensor whose row count does not match `num_scheduled_tokens`, so
+# gpu_model_runner._preprocess can fail with:
+#
+#   RuntimeError: The size of tensor a (N) must match the size of tensor b (M)
+#     at non-singleton dimension 0
+#
+# Upstream fix: vllm-project/vllm PR #39229. This image hot-copies the patched
+# voxtral_realtime.py from the PR head SHA into the stock cu130-nightly image.
+# Confirmed working in HF model discussion #38.
+# =============================================================================
+
+FROM vllm/vllm-openai:cu130-nightly
+
+ARG PATCH_SHA=9942f5c50acdcb08d7e0ee94cf2528d21dbde1ad
+
+# Bake audio extras at build time so entrypoint pip install is not needed.
+RUN pip install --no-cache-dir 'vllm[audio]' soxr librosa soundfile 'mistral-common[audio]'
+
+# Hot-patch the single file with PR #39229's fix. Pinned to the exact SHA so the
+# patch cannot drift if the PR branch changes.
+RUN curl -fsSL \
+      "https://raw.githubusercontent.com/parasol-aser/vllm/${PATCH_SHA}/vllm/model_executor/models/voxtral_realtime.py" \
+      -o /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/voxtral_realtime.py \
+ && grep -q 'is_multimodal' /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/voxtral_realtime.py \
+ && echo "patch applied OK"
