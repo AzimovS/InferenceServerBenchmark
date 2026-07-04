@@ -88,6 +88,35 @@ co-serve:
 	$(PYTHON) core/sweep.py --co-serve $(LABEL_A) $(LABEL_B)
 
 # ==============================================================================
+# EMBEDDING sidecar  —  TEI, colocated next to the vLLM servers
+# ==============================================================================
+
+# Start the embedding sidecar (default: Qwen/Qwen3-Embedding-4B on :8002).
+# Override with EMBED_MODEL / EMBED_PORT / EMBED_MAX_BATCH_TOKENS (see .env.example).
+embed-up:
+	$(DC) --profile embedding up -d tei-embed
+
+embed-down:
+	$(DC) --profile embedding rm -sf tei-embed
+
+embed-logs:
+	$(DC) --profile embedding logs -f tei-embed
+
+# Wait for TEI health (first boot loads ~8 GB of weights), then round-trip one
+# embedding through the native /embed endpoint and print the vector dimension.
+embed-sanity:
+	@echo "Waiting for TEI on :$${EMBED_PORT:-8002} ..."
+	@for i in $$(seq 1 60); do \
+		curl -sf http://localhost:$${EMBED_PORT:-8002}/health > /dev/null && break; \
+		if [ $$i -eq 60 ]; then echo "ERROR: TEI not healthy after 5 min — check 'make embed-logs'"; exit 1; fi; \
+		sleep 5; \
+	done
+	@curl -s http://localhost:$${EMBED_PORT:-8002}/embed \
+		-H 'Content-Type: application/json' \
+		-d '{"inputs": "The quick brown fox jumps over the lazy dog"}' \
+		| $(PYTHON) -c 'import sys, json; v = json.load(sys.stdin)[0]; print(f"OK: {len(v)}-dim embedding from TEI")'
+
+# ==============================================================================
 # STT (Speech-to-Text)  —  models.yaml-driven sweeps
 # ==============================================================================
 
@@ -177,6 +206,7 @@ tui:
 
 .PHONY: \
 	sanity concurrency-bench co-deploy probe serve \
+	embed-up embed-down embed-logs embed-sanity \
 	stt-sanity stt-bench mixed-co-deploy download-stt-data \
 	stt-streaming-sanity stt-streaming-bench \
 	bench-sanity bench-concurrency \

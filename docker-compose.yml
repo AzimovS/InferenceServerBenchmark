@@ -226,6 +226,45 @@ services:
     networks:
       - inference-net
 
+  # ── Embedding sidecar — TEI (embedding profile) ────────────────────────────
+  # RAG embeddings colocated next to the vLLM servers, served with HuggingFace
+  # Text-Embeddings-Inference rather than a third vLLM. Embedding models run a
+  # single pooled forward pass per input (no growing KV cache), but a vLLM
+  # instance still pre-reserves gpu-memory-utilization × TOTAL VRAM for its
+  # paged-KV pool — a third vLLM at the 0.92 default would try to claim ~42 GB
+  # on the 48 GB L40 and OOM against the Voxtral + Chandra co-serve. TEI
+  # allocates only weights + a bounded batch buffer (--max-batch-tokens), so it
+  # coexists without joining the gpu-memory-utilization budget (§ README
+  # "Server 03"). Image tag 89-* targets Ada sm_89 (L40S).
+  tei-embed:
+    image: ${TEI_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:89-1.9}
+    container_name: tei-embed
+    runtime: nvidia
+    restart: unless-stopped
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CUDA_VISIBLE_DEVICES=0
+      - HF_TOKEN=${HF_TOKEN:-}
+    ports:
+      - "${EMBED_PORT:-8002}:80"
+    volumes:
+      - ~/.cache/huggingface/hub:/data          # TEI's HF cache — reuses weights fetched by `make prefetch`
+    command: >
+      --model-id ${EMBED_MODEL:-Qwen/Qwen3-Embedding-4B}
+      --dtype float16
+      --max-batch-tokens ${EMBED_MAX_BATCH_TOKENS:-8192}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    networks:
+      - inference-net
+    profiles:
+      - embedding
+
   # ── GPU telemetry (optional) ───────────────────────────────────────────────
   nvitop:
     image: nvidia/cuda:12.3.0-base-ubuntu22.04
