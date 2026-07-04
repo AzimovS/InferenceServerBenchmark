@@ -37,14 +37,15 @@ Everything else is driven by `make`.
 | `stt-runner` | — | STT benchmark runner (Goal 3) |
 | `stt-streaming-runner` | — | Streaming STT benchmark runner — WebSocket (Goal 3b) |
 | `mixed-runner` | — | Mixed text+STT co-deploy runner (Goal 4) |
+| `tei-embed` | 8002 | Embedding sidecar — TEI, `embedding` profile (Server 03) |
 
 ---
 
 ## Prerequisites
 
 ### Target Server
-- **GPU**: NVIDIA RTX PRO 6000 (Blackwell / GB202) — 96 GB VRAM
-- **Driver**: 580.105.08+ / CUDA 13.0+
+- **Reference GPU**: NVIDIA RTX PRO 6000 (Blackwell / GB202) — 96 GB VRAM. Each benchmark run targets a **single** GPU (`CUDA_VISIBLE_DEVICES=0`); the `models.yaml` large tier (80–122B) is sized for this 96 GB budget. See **[Fleet](#fleet-actual-hardware)** below — one host is a smaller 48 GB L40S.
+- **Driver**: 580.105.08+ / CUDA 13.0+ (fleet observed on 580.159 and 595.x, CUDA 13.0–13.2)
 - **OS**: Ubuntu 22.04+
 - **Docker**: Engine 24.0+ with NVIDIA Container Toolkit
 - **Docker Compose**: v2.0+
@@ -57,6 +58,20 @@ Everything else is driven by `make`.
   pipx ensurepath
   source ~/.bashrc
   ```
+
+### Fleet (actual hardware)
+
+The reference spec above describes the primary Blackwell hosts. The live fleet is **3 single-GPU hosts spanning two card types** (confirmed via `nvidia-smi`, 2026-07-02):
+
+| GPU | VRAM | Power cap | Driver / CUDA | Role |
+|---|---|---|---|---|
+| RTX PRO 6000 (Blackwell) | 96 GB | 300 W | 595.58 / 13.2 | Large-model host (likely Max-Q variant) |
+| RTX PRO 6000 (Blackwell) | 96 GB | 600 W | 580.159 / 13.0 | Large-model host (full-power variant) |
+| NVIDIA L40S (Ada, sm_89) | 48 GB | 350 W | 595.71 / 13.2 | STT / small-model host (Voxtral) |
+
+> ⚠️ **The L40S host has 48 GB, not 96 GB.** The 80–122B large tier does **not** fit there — only the medium / small / STT models do. On the L40S: halve the co-deploy budget (see [Co-deploy Memory Allocation](#co-deploy-memory-allocation)), expect `max-num-seqs` ≈ 64 (vs ≈ 128 on Blackwell), and note it lacks FlashAttention 3 (sm_89) but *does* support FP8 KV-cache. The two Blackwell cards differ in power cap (300 W vs 600 W) — the 300 W card sustains lower throughput, so don't compare their benchmark numbers without noting the cap.
+>
+> Hostname↔card mapping is only partly confirmed (`ecodev-ai-inference-03` = L40S; `-02` per `GATEWAY.md` is a Blackwell serving the 122B). Run `tsh ls` + `nvidia-smi` per host to confirm the rest.
 
 ### Local Development Machine
 - Git (for code sync)
@@ -116,10 +131,12 @@ make stt-streaming-bench LABEL=voxtral-mini-4b-patched
 # Goal 4: Mixed text + STT co-deploy
 make mixed-co-deploy LABEL_LARGE=gpt-oss-120b LABEL_STT=voxtral-mini-4b-patched
 
-# L40 server 03: Voxtral priority + low-rate Chandra OCR
+# L40 server 03: Voxtral priority + low-rate Chandra OCR + embedding sidecar
 make build-voxtral-fix
-GPU_VRAM_GB=48 CO_SERVE_GPU_UTIL_A=0.55 CO_SERVE_GPU_UTIL_B=0.30 \
+GPU_VRAM_GB=48 CO_SERVE_GPU_UTIL_A=0.41 CO_SERVE_GPU_UTIL_B=0.30 \
   make co-serve LABEL_A=voxtral-mini-4b-patched LABEL_B=chandra-ocr-2
+make embed-up          # Qwen3-Embedding-4B via TEI on :8002
+make embed-sanity      # waits for health, round-trips one embedding
 ```
 
 ---
@@ -176,7 +193,7 @@ models:
 | `name` | HuggingFace model ID | Set `HF_TOKEN` for gated models |
 | `label` | any slug | Used in CLI (`LABEL=`) and output filenames |
 | `role` | `large`, `small` | Determines endpoint in co-deploy |
-| `modality` | `text`, `stt`, `vlm` | Routes to the correct benchmark runner |
+| `modality` | `text`, `stt`, `vlm`, `embedding` | Routes to the correct benchmark runner; `embedding` is excluded from benchmark pools and served via the TEI sidecar (`make embed-up`) |
 | `quantization` | `none`, `fp8`, `awq`, `gptq` | FP8 recommended for 70B+ on Blackwell |
 | `gpu_memory_util` | 0.0 – 1.0 | For solo benchmarks; co-deploy splits are auto-computed |
 | `tensor_parallel` | integer | 1 for single-GPU |
@@ -290,9 +307,9 @@ make mixed-co-deploy LABEL_LARGE=gpt-oss-120b LABEL_STT=voxtral-mini-4b-patched
 
 Co-deploys a text LLM + STT model on the same GPU and benchmarks both simultaneously. Text requests exercise the chat/completion endpoint while STT requests transcribe audio files — mimicking real-world usage (e.g., meeting transcription + LLM queries at the same time). Reports independent metrics for each endpoint.
 
-### 5. Server 03 — Voxtral + Chandra OCR on L40
+### 5. Server 03 — Voxtral + Chandra OCR + Embeddings on L40
 
-> "Can we keep Voxtral as the priority workload while offering low-rate OCR?"
+> "Can we keep Voxtral as the priority workload while offering low-rate OCR — and RAG embeddings?"
 
 After the repo changes are merged, SSH to server 03 and pull them:
 
@@ -309,7 +326,7 @@ make status
 make stop
 ```
 
-Start the mixed offering with Voxtral on port 8000 and Chandra OCR on port 8001:
+**Two-way (no embedding sidecar)** — Voxtral on port 8000, Chandra OCR on port 8001:
 
 ```bash
 make build-voxtral-fix
@@ -318,6 +335,33 @@ GPU_VRAM_GB=48 CO_SERVE_GPU_UTIL_A=0.55 CO_SERVE_GPU_UTIL_B=0.30 \
 ```
 
 This explicitly gives the patched Voxtral server about 26.4 GB on the L40 and Chandra about 14.4 GB, leaving roughly 7.2 GB outside vLLM allocation for CUDA/runtime slack. Keep OCR concurrency low; if Chandra OOMs during real documents, try `CO_SERVE_GPU_UTIL_A=0.50 CO_SERVE_GPU_UTIL_B=0.35`. If Voxtral latency or streaming stability regresses, reduce Chandra OCR request concurrency first.
+
+**Three-way (with the Qwen3-Embedding-4B sidecar)** — trim Voxtral to 0.41 and Chandra to 0.30 so TEI's ~10.5 GB fits:
+
+```bash
+make build-voxtral-fix
+GPU_VRAM_GB=48 CO_SERVE_GPU_UTIL_A=0.41 CO_SERVE_GPU_UTIL_B=0.30 \
+  make co-serve LABEL_A=voxtral-mini-4b-patched LABEL_B=chandra-ocr-2
+make embed-up
+make embed-sanity
+```
+
+L40 three-way budget (46,068 MiB total):
+
+| Tenant | Port | Allocation | ≈ VRAM |
+|---|---|---|---|
+| `voxtral-mini-4b-patched` (priority STT) | 8000 | util 0.41 | 18.9 GB |
+| `chandra-ocr-2` (low-rate OCR) | 8001 | util 0.30 | 13.8 GB |
+| `tei-embed` (Qwen3-Embedding-4B, BF16) | 8002 | weights + batch buffer | ~10.5 GB |
+| slack (CUDA/runtime) | — | — | ~2.9 GB |
+
+Why TEI and not a third vLLM: embedding models run a single pooled forward pass per input — there is no growing KV cache — but a vLLM instance still pre-reserves `gpu-memory-utilization × total VRAM` for its paged-KV pool, so a third vLLM at the 0.92 default would try to claim ~42 GB and OOM against the co-serve. TEI allocates only weights plus a bounded batch buffer (`--max-batch-tokens`, default 8192), so it slots into the leftover VRAM without joining the utilization budget.
+
+Notes:
+- Embeddings are served OpenAI-compatible at `http://<server>:8002/v1/embeddings` (native TEI routes `/embed`, `/rerank` also available). Output is 2560-dim (Matryoshka-truncatable).
+- If the budget ever tightens, drop the sidecar to FP8 (~5–6 GB, `vllm serve Qwen/Qwen3-Embedding-4B --runner pooling --quantization fp8 --gpu-memory-utilization 0.20`) or to `Qwen/Qwen3-Embedding-0.6B` on TEI (~2 GB) — validate retrieval quality on your own corpus after any quantization.
+- Voxtral at 0.41 matches the observed stable co-serve footprint, but it is below the 0.55 priority budget — watch STT P95 / streaming stability after enabling the sidecar, and shed Chandra/embedding load first if it regresses.
+- Chandra's `loaded_gb: 12` is an estimate; run the calibration pass above and re-check `nvidia-smi` before trusting the 0.30 split under real documents.
 
 ---
 
@@ -329,6 +373,9 @@ This explicitly gives the patched Voxtral server about 26.4 GB on the L40 and Ch
 | `make concurrency-bench [LABEL=]` | Goal 1 — rank single-tenant models |
 | `make co-deploy [LABEL_LARGE= LABEL_SMALL=]` | Goal 2 — rank co-deploy pairs |
 | `make co-serve LABEL_A=<label> LABEL_B=<label>` | Boot two models on ports 8000/8001 without benchmarking |
+| `make embed-up` | Start the TEI embedding sidecar on :8002 (`EMBED_MODEL`, default Qwen3-Embedding-4B) |
+| `make embed-sanity` | Wait for TEI health, round-trip one embedding, print its dimension |
+| `make embed-logs` / `make embed-down` | Tail / stop the embedding sidecar |
 | `make download-stt-data` | Download LibriSpeech test-clean dataset |
 | `make stt-sanity [LABEL=]` | Goal 3 — quick 10-file STT smoke test |
 | `make stt-bench [LABEL=]` | Goal 3 — STT concurrency benchmark |

@@ -348,3 +348,38 @@ models:
     topology: dense
     loaded_gb: 5
     vllm_extra_flags: "--trust-remote-code"
+
+  # ── Embedding (retrieval / RAG) ────────────────────────────────────────────
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Qwen3-Embedding-4B — RAG embedding sidecar, colocated on the L40 next to
+  # the Voxtral + Chandra co-serve.
+  #
+  # Served via HuggingFace Text-Embeddings-Inference (`make embed-up`), NOT
+  # through the vLLM path: embedding models run one pooled forward pass per
+  # input (no growing KV cache), but a vLLM instance still pre-reserves
+  # gpu-memory-utilization × total VRAM for its paged-KV pool — a third vLLM
+  # at defaults would claim ~42 GB and OOM the L40. TEI allocates weights +
+  # a bounded batch buffer only (~10.5 GB at BF16, --max-batch-tokens 8192).
+  #
+  # modality: embedding is excluded from every benchmark pool (sweep.py
+  # filters on text/stt/vlm), but the entry keeps the model in the catalog so
+  # `make prefetch` downloads it and `make serve` can boot it solo for
+  # calibration (vLLM pooling runner, right-sized util).
+  #
+  # L40 three-way budget (46,068 MiB total):
+  #   voxtral-mini-4b-patched  util 0.41  ≈ 18.9 GB   (:8000, priority STT)
+  #   chandra-ocr-2            util 0.30  ≈ 13.8 GB   (:8001, low-rate OCR)
+  #   tei-embed                ~10.5 GB               (:8002, this model)
+  #   slack                    ~2.9 GB
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: Qwen/Qwen3-Embedding-4B
+    label: qwen3-embedding-4b
+    role: small
+    modality: embedding         # Excluded from text/stt/vlm benchmark pools; served via TEI (make embed-up)
+    quantization: none          # BF16; ~8.0 GB weights (FP8 ≈ 4 GB if the colocation budget ever tightens)
+    gpu_memory_util: 0.25       # Only used by `make serve` (vLLM pooling calibration); TEI ignores this
+    tensor_parallel: 1
+    topology: dense
+    loaded_gb: 10
+    vllm_extra_flags: "--runner pooling --max-model-len 8192 --max-num-batched-tokens 8192"
